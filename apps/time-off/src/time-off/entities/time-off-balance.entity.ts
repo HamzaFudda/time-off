@@ -68,12 +68,4 @@ export class TimeOffBalanceEntity extends EntityBase {
   })
   @Column({ name: 'last_synced_at', type: 'datetime', nullable: true })
   lastSyncedAt?: Date | null;
-
-  /**
-   * Computed: effective balance an employee can actually use.
-   * Never persisted — always derived on read from availableDays - reservedDays.
-   */
-  get effectiveBalance(): number {
-    return Math.max(0, this.availableDays - this.reservedDays);
-  }
 }

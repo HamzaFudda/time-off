@@ -201,39 +201,31 @@ We use three safety nets to keep data accurate:
 
 ## 9. Configuration Assumptions (Assessment Scope)
 
-Several constants in this design — the cache TTL, the cron interval, the retry budget — are not arbitrary, but they *are* assumed for the purposes of this assessment. In a real engagement, every one of these numbers would be a conversation with the HCM team before I wrote a single line of code.
+For the scope of this assessment, I am making some baseline assumptions for constants like cache TTL, pooling cron intervals, and retry budgets. In the real world, before writing any code, I would sit down with the HCM team to understand exactly how often their data is updated, the flows and protocols they follow, and their system's actual behavior. That conversation is what dictates these constants so we aren't making extra, unnecessary calls to their servers.
 
-Here's what I've hardcoded and why it needs a real answer in production:
+Here is what I have configured for this take-home, and how it would change in production:
 
-**Balance cache TTL — currently 4 hours**
+**Balance cache TTL (4 hours)**
+Right now, this is set to 4 hours. It's a middle ground to avoid hammering the HCM API while keeping balances relatively fresh. But in production, the TTL depends on the HCM's actual write cadence. If they only run a batch update at midnight, a 4-hour TTL is wasted overhead. If they process corrections continuously, we might drop it to 30 minutes.
 
-I picked 4 hours as a reasonable middle ground: long enough to avoid hammering the HCM API on every employee page load, short enough that most balance changes show up within half a working day. But this number is meaningless without answering: *How frequently does the HCM actually update balances?* If the HCM only runs a payroll batch once a day at midnight, a 4-hour TTL is wasted calls. If they process corrections continuously throughout the day, we might want 30 minutes. The right TTL is derived from HCM's actual write cadence — not a gut feeling.
+**Cron batch sync interval (8 hours)**
+The batch endpoint catches what webhooks miss. For the assessment, the pooling cron job runs every 8 hours. Realistically, if out-of-band updates (like anniversary bonuses) only happen at specific windows, I would schedule the cron to run right after those windows. Running a blind 8-hour loop when data only changes twice a year adds unnecessary server load to both systems.
 
-**Cron batch sync interval — currently every 8 hours**
+**HTTP timeout (5 seconds)**
+I set a standard 5-second Axios timeout for HCM calls. The actual value should be based on their p95 response time. If they reliably respond in 300ms, I would tighten this down to 2 seconds to fail faster. If they have heavy legacy endpoints that take 8 seconds, 5 seconds will just trigger false failures.
 
-Same logic. The batch endpoint is the safety net that catches everything the webhooks miss. If the HCM team tells me that out-of-band updates (anniversary bonuses, year-start resets) only happen at defined windows — say, 2am on January 1st and on each employee's hire date anniversary — I'd schedule the cron to run slightly after those known windows instead of on a dumb 8-hour loop. Running a full company-wide batch sync every 8 hours when balances only meaningfully change twice a year is just unnecessary load on both systems.
+**Retry attempts and backoff (3 retries, 100ms base)**
+Retrying failed calls 3 times with exponential backoff makes sense on paper. But if the HCM's typical downtime is a 30-minute maintenance window rather than a split-second network drop, fast retries are useless. In that case, I'd configure it to drop the request into the `HCM_FAILED` state immediately and let a background worker pick it up later instead of hammering a down system.
 
-**HTTP timeout — currently 5 seconds**
+**The HCM Team Conversation**
+The actual values for these variables would be finalized by answering these questions with the HCM integration team:
 
-I set 5 seconds as the Axios timeout for HCM calls. That's a standard defensive value, but it's not based on anything real. The HCM team would tell me what their p95 response time looks like. If their real-time balance endpoint reliably responds in 300ms, I can tighten this to 2 seconds and fail faster on real outages. If they're a SOAP-over-HTTPS legacy system that occasionally takes 8 seconds under load, a 5-second timeout would cause false failures.
-
-**Retry attempts and backoff — currently 3 retries, 100ms base delay**
-
-Retrying a failed HCM call 3 times with exponential backoff is sensible, but the right numbers depend on the HCM's failure characteristics. Is it usually a transient blip that clears in under a second? Or is it maintenance windows that last 30 minutes? If it's the former, 3 fast retries makes sense. If it's the latter, we're better off with 1 retry and then putting the request into a `HCM_FAILED` queue to be picked up when HCM comes back — rather than hammering a system that's clearly down for a while.
-
-**The conversation I'd have with the HCM team:**
-
-Before going to production, I'd sit down with the HCM integration team and work through these specific questions:
-
-- What is your API's p50/p95/p99 response time for the real-time balance endpoint?
-- How often do you run batch processes that update employee balances? Are these scheduled (daily/weekly) or event-driven?
-- Do you support idempotency keys on deduction requests natively, or do we need to build that ourselves?
-- Do you support webhooks for push notifications, or are we polling-only?
-- What are your rate limits? (Tells me how aggressive the cron can be.)
-- What does your maintenance window schedule look like, and do you publish it?
-- Are there known high-traffic periods where your API degrades? (e.g., year-start, open enrollment)
-
-The answers to these questions directly drive the constants. The architecture I've designed is flexible enough to accommodate any reasonable answers — the TTLs, cron schedules, and timeouts are all config values, not hard-coded assumptions baked into logic. Changing them is a `.env` update, not a code change.
+* How often is data actually updated, and what flows/protocols do you follow for those updates?
+* What is the p50/p95/p99 latency for real-time balance checks?
+* Do you natively support idempotency keys for POST requests, or do we handle deduplication?
+* Are webhooks available, or are we strictly limited to polling?
+* What are the hard API rate limits?
+* When are the scheduled maintenance windows or known high-load periods?
 
 ---
 

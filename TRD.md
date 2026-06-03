@@ -212,7 +212,7 @@ Right now, this is set to 4 hours. It's a middle ground to avoid hammering the H
 The batch endpoint catches what webhooks miss. For the assessment, the pooling cron job runs every 8 hours. Realistically, if out-of-band updates (like anniversary bonuses) only happen at specific windows, I would schedule the cron to run right after those windows. Running a blind 8-hour loop when data only changes twice a year adds unnecessary server load to both systems.
 
 **HTTP timeout (5 seconds)**
-I set a standard 5-second Axios timeout for HCM calls. The actual value should be based on their p95 response time. If they reliably respond in 300ms, I would tighten this down to 2 seconds to fail faster. If they have heavy legacy endpoints that take 8 seconds, 5 seconds will just trigger false failures.
+I set a standard 5-second Axios timeout for HCM calls. The actual value should be based on their response time. If they reliably respond in 300ms, I would tighten this down to 2 seconds to fail faster. If they have heavy legacy endpoints that take 8 seconds, 5 seconds will just trigger false failures.
 
 **Retry attempts and backoff (3 retries, 100ms base)**
 Retrying failed calls 3 times with exponential backoff makes sense on paper. But if the HCM's typical downtime is a 30-minute maintenance window rather than a split-second network drop, fast retries are useless. In that case, I'd configure it to drop the request into the `HCM_FAILED` state immediately and let a background worker pick it up later instead of hammering a down system.
@@ -221,7 +221,7 @@ Retrying failed calls 3 times with exponential backoff makes sense on paper. But
 The actual values for these variables would be finalized by answering these questions with the HCM integration team:
 
 * How often is data actually updated, and what flows/protocols do you follow for those updates?
-* What is the p50/p95/p99 latency for real-time balance checks?
+* What is the latency for real-time balance checks?
 * Do you natively support idempotency keys for POST requests, or do we handle deduplication?
 * Are webhooks available, or are we strictly limited to polling?
 * What are the hard API rate limits?
@@ -257,23 +257,26 @@ The actual values for these variables would be finalized by answering these ques
 
 ---
 
-## 13. Open Questions
+#13. Open Questions
 
-These are the questions I'd need answered before calling this production-ready. Some affect architecture; most affect configuration.
+Before I would ever stamp this as production-ready, we need to have a sit-down with both the Product team and the HCM integration team. I am not guessing on these variables. Here is exactly what needs to be answered:
 
-**HCM Integration**
-1. Do you support idempotency keys on deduction POST requests natively? If not, we build a deduplication layer on our side.
-2. What dimensions does your balance API require? (`locationId` + `leaveTypeId` is what I'm assuming — are there additional axes like cost center or pay group?)
-3. Do you support webhook callbacks for balance change events, or are we polling-only?
-4. What is your rate limit policy on the real-time balance and batch endpoints?
+HCM Integration Specs
 
-**HCM Performance & Reliability**
-5. What are your p50/p95 response times on the real-time balance GET endpoint? This drives our HTTP timeout config.
-6. Do you publish a maintenance window schedule? This lets us avoid scheduling our cron right when you're down.
-7. Are there known peak periods where your API degrades (year-start, open enrollment)? We'd want to reduce polling frequency during those windows.
+Does the HCM natively support idempotency keys on deduction POST requests? If they don't, we have to build our own deduplication layer in the NestJS service to guarantee we don't double-charge vacation days on a network retry.
 
-**Business Rules**
-8. How often do out-of-band balance changes happen in practice? (anniversary bonuses, HR corrections) — this directly determines whether an 8-hour batch sync is appropriate or if we need to tighten it.
-9. Should the balance TTL for *display purposes* be different from the TTL that *gates approval*? Product decision, but it affects UX.
-10. What is the acceptable staleness window for an employee's balance view? (currently assuming 4 hours — is that OK with Product?)
+What exact dimensions does the HCM API require? I built the schema assuming location_id and leave_type, but if they also strictly require cost centers or pay groups to process a deduction, our data model needs an update.
+
+Can the HCM push webhook events to us when a balance changes out-of-band, or are we strictly stuck polling them?
+
+What are the hard API rate limits? I need to know the ceiling before I configure how aggressively the background workers can run.
+
+HCM Reliability & Telemetry
+5. What is the real latency on their real-time balance GET endpoint? I need actual metrics to set a defensive HTTP timeout, otherwise we'll just be guessing and either failing too early or hanging our own threads.
+6. Do they publish a reliable maintenance window schedule? If we know when they go down, we can pause the sync worker instead of pointlessly slamming a dead server and filling our logs with noise.
+7. Does their API historically choke during peak seasons? If so, we need a plan to dial back our polling frequency during those windows to avoid causing a cascade failure.
+
+Product & Business Rules
+8. Realistically, how often do HR admins or automated scripts change balances directly in the HCM? If it's twice a year, an 8-hour batch sync is overkill. If they are making manual corrections constantly, 8 hours is way too slow.
+9. What is Product's actual tolerance for stale data on the UI? I currently have the cache TTL set to 4 hours. Is it acceptable to the business if an employee looks at a balance that is 3.5 hours out of date, knowing that we will hard-verify the true number before the manager can actually approve it?
 

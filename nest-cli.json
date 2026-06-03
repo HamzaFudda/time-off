@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json.schemastore.org/nest-cli",
+  "collection": "@nestjs/schematics",
+  "monorepo": true,
+  "root": "apps/time-off",
+  "sourceRoot": "apps/time-off/src",
+  "compilerOptions": {
+    "deleteOutDir": true,
+    "webpack": false,
+    "tsConfigPath": "apps/time-off/tsconfig.app.json"
+  },
+  "projects": {
+    "time-off": {
+      "type": "application",
+      "root": "apps/time-off",
+      "entryFile": "main",
+      "sourceRoot": "apps/time-off/src",
+      "compilerOptions": {
+        "tsConfigPath": "apps/time-off/tsconfig.app.json"
+      }
+    },
+    "hcm-mock": {
+      "type": "application",
+      "root": "apps/hcm-mock",
+      "entryFile": "main",
+      "sourceRoot": "apps/hcm-mock/src",
+      "compilerOptions": {
+        "tsConfigPath": "apps/hcm-mock/tsconfig.app.json"
+      }
+    }
+  }
+}

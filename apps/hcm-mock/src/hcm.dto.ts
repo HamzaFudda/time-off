@@ -4,6 +4,7 @@ import {
   IsNumber,
   IsPositive,
   IsBoolean,
+  IsOptional,
 } from 'class-validator';
 
 export class GetBalanceQueryDto {
@@ -45,6 +46,10 @@ export class ProcessDeductionDto {
 export class SetChaosDto {
   @IsBoolean()
   enabled: boolean;
+
+  @IsNumber()
+  @IsOptional()
+  failureProbability?: number;
 }
 
 export class MutateBalanceDto {

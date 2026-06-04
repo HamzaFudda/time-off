@@ -195,10 +195,14 @@ export class TimeOffBalanceService {
   }
 
   /**
-   * Release a reservation — called when:
-   * - HCM confirms: release reserved and deduct from available (net effect: -days)
-   * - HCM fails: release reserved only (full rollback, available unchanged)
-   * - Request cancelled: release reserved only
+   * Commit a deduction against availableDays.
+   *
+   * Positive `days` (forward commit): reduces availableDays AND releases the
+   * matching amount from reservedDays. Called after HCM confirms a deduction.
+   *
+   * Negative `days` (reversal/credit): increases availableDays only. The
+   * reservation was already zeroed at commit time, so we must NOT touch
+   * reservedDays — adding to it would create a phantom reservation.
    */
   async commitDeduction(
     employeeId: string,
@@ -212,7 +216,13 @@ export class TimeOffBalanceService {
       await this.balanceRepo.save({
         ...balance,
         availableDays: balance.availableDays - days,
-        reservedDays: Math.max(0, balance.reservedDays - days),
+        // Only release the reservation on a forward commit (days > 0).
+        // On a reversal (days < 0) the reservation is already 0; adding |days|
+        // back would corrupt the balance with a phantom reservation.
+        reservedDays:
+          days > 0
+            ? Math.max(0, balance.reservedDays - days)
+            : balance.reservedDays,
       });
     } catch (err) {
       if ((err as Error).name === 'OptimisticLockVersionMismatchError') {

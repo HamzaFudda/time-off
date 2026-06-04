@@ -136,7 +136,7 @@ export class TimeOffRequestService {
     );
 
     // Step 3: Transition to HCM_SUBMITTING + reserve days
-    await this.requestRepo.save({
+    const submittingRequest = await this.requestRepo.save({
       ...request,
       status: RequestStatusEnum.HCM_SUBMITTING,
       managerId: dto.managerId,
@@ -169,7 +169,7 @@ export class TimeOffRequestService {
 
       // Step 5a: HCM confirmed
       const confirmed = await this.requestRepo.save({
-        ...request,
+        ...submittingRequest,
         status: RequestStatusEnum.HCM_SUBMITTED,
         hcmErrorMessage: null,
       });

@@ -163,7 +163,7 @@ export class HcmController {
     `,
   })
   setChaosMode(@Body() dto: SetChaosDto): { status: string } {
-    this.hcmService.setChaosMode(dto.enabled);
+    this.hcmService.setChaosMode(dto.enabled, dto.failureProbability);
     return { status: `Chaos mode ${dto.enabled ? 'enabled' : 'disabled'}` };
   }
 }

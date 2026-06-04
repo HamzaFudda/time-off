@@ -51,11 +51,17 @@ export class HcmClientService {
       'HCM_BASE_URL',
       'http://localhost:3001',
     );
-    this.timeoutMs = this.config.get<number>('HCM_TIMEOUT_MS', 5000);
-    this.maxRetries = this.config.get<number>('HCM_MAX_RETRIES', 3);
-    this.retryBaseDelayMs = this.config.get<number>(
-      'HCM_RETRY_BASE_DELAY_MS',
-      100,
+    this.timeoutMs = parseInt(
+      this.config.get<string>('HCM_TIMEOUT_MS', '5000'),
+      10,
+    );
+    this.maxRetries = parseInt(
+      this.config.get<string>('HCM_MAX_RETRIES', '3'),
+      10,
+    );
+    this.retryBaseDelayMs = parseInt(
+      this.config.get<string>('HCM_RETRY_BASE_DELAY_MS', '100'),
+      10,
     );
   }
 
@@ -68,8 +74,8 @@ export class HcmClientService {
     locationId: string,
     leaveTypeId: string,
   ): Promise<HcmBalanceResponse> {
-    const url = `${this.baseUrl}/employees/${employeeId}/balances/${leaveTypeId}`;
-    const params = { locationId };
+    const url = `${this.baseUrl}/balances`;
+    const params = { employeeId, locationId, leaveTypeId };
 
     return this.withRetry<HcmBalanceResponse>(async () => {
       const response = await lastValueFrom(

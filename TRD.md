@@ -257,26 +257,30 @@ The actual values for these variables would be finalized by answering these ques
 
 ---
 
-#13. Open Questions
+## 13. Open Questions
 
 Before I would ever stamp this as production-ready, we need to have a sit-down with both the Product team and the HCM integration team. I am not guessing on these variables. Here is exactly what needs to be answered:
 
-HCM Integration Specs
+### HCM Integration Specs
 
-Does the HCM natively support idempotency keys on deduction POST requests? If they don't, we have to build our own deduplication layer in the NestJS service to guarantee we don't double-charge vacation days on a network retry.
+1. Does the HCM natively support idempotency keys on deduction POST requests? If they don't, we have to build our own deduplication layer in the NestJS service to guarantee we don't double-charge vacation days on a network retry.
 
-What exact dimensions does the HCM API require? I built the schema assuming location_id and leave_type, but if they also strictly require cost centers or pay groups to process a deduction, our data model needs an update.
+2. What exact dimensions does the HCM API require? I built the schema assuming location_id and leave_type, but if they also strictly require cost centers or pay groups to process a deduction, our data model needs an update.
 
-Can the HCM push webhook events to us when a balance changes out-of-band, or are we strictly stuck polling them?
+3. Can the HCM push webhook events to us when a balance changes out-of-band, or are we strictly stuck polling them?
 
-What are the hard API rate limits? I need to know the ceiling before I configure how aggressively the background workers can run.
+4. What are the hard API rate limits? I need to know the ceiling before I configure how aggressively the background workers can run.
 
-HCM Reliability & Telemetry
+### HCM Reliability & Telemetry
+
 5. What is the real latency on their real-time balance GET endpoint? I need actual metrics to set a defensive HTTP timeout, otherwise we'll just be guessing and either failing too early or hanging our own threads.
+
 6. Do they publish a reliable maintenance window schedule? If we know when they go down, we can pause the sync worker instead of pointlessly slamming a dead server and filling our logs with noise.
+
 7. Does their API historically choke during peak seasons? If so, we need a plan to dial back our polling frequency during those windows to avoid causing a cascade failure.
 
-Product & Business Rules
-8. Realistically, how often do HR admins or automated scripts change balances directly in the HCM? If it's twice a year, an 8-hour batch sync is overkill. If they are making manual corrections constantly, 8 hours is way too slow.
-9. What is Product's actual tolerance for stale data on the UI? I currently have the cache TTL set to 4 hours. Is it acceptable to the business if an employee looks at a balance that is 3.5 hours out of date, knowing that we will hard-verify the true number before the manager can actually approve it?
+### Product & Business Rules
 
+8. Realistically, how often do HR admins or automated scripts change balances directly in the HCM? If it's twice a year, an 8-hour batch sync is overkill. If they are making manual corrections constantly, 8 hours is way too slow.
+
+9. What is Product's actual tolerance for stale data on the UI? I currently have the cache TTL set to 4 hours. Is it acceptable to the business if an employee looks at a balance that is 3.5 hours out of date, knowing that we will hard-verify the true number before the manager can actually approve it?

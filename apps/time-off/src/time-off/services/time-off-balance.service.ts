@@ -58,9 +58,12 @@ export class TimeOffBalanceService {
     private readonly hcmClient: HcmClientService,
     private readonly config: ConfigService,
   ) {
-    this.cacheTtlMs = this.config.get<number>(
-      'BALANCE_CACHE_TTL_MS',
-      4 * 60 * 60 * 1000,
+    this.cacheTtlMs = parseInt(
+      this.config.get<string>(
+        'BALANCE_CACHE_TTL_MS',
+        (4 * 60 * 60 * 1000).toString(),
+      ),
+      10,
     ); // 4 hours
   }
 

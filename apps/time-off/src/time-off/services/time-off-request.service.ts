@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import { TimeOffRequestEntity } from '../entities/time-off-request.entity';
 import { RequestStatusEnum } from '../enums/request-status.enum';
 import { HcmClientService } from './hcm-client.service';
@@ -98,7 +98,7 @@ export class TimeOffRequestService {
     const request = this.requestRepo.create({
       ...dto,
       status: RequestStatusEnum.PENDING_APPROVAL,
-      hcmTransactionId: uuidv4(),
+      hcmTransactionId: randomUUID(),
     });
 
     return this.requestRepo.save(request);

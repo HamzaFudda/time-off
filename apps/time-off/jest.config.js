@@ -8,7 +8,7 @@ module.exports = {
     '^.+\\.(t|j)s$': [
       'ts-jest',
       {
-        tsconfig: '../tsconfig.app.json',
+        tsconfig: '<rootDir>/../tsconfig.app.json',
       },
     ],
   },
@@ -22,4 +22,7 @@ module.exports = {
   coverageDirectory: '../../../coverage',
   testEnvironment: 'node',
   setupFiles: ['../../../test/setup-env.ts'],
+  moduleNameMapper: {
+    '^uuid$': require.resolve('uuid'),
+  },
 };

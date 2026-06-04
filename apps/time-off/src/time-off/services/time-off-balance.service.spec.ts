@@ -121,7 +121,7 @@ describe('TimeOffBalanceService', () => {
 
       // Background fetch should be called
       // We must wait a tick for the fire-and-forget promise to execute in the test environment
-      await new Promise(process.nextTick);
+      await new Promise<void>((resolve) => process.nextTick(resolve));
 
       expect(hcmClient.getBalance).toHaveBeenCalledWith(
         'emp1',

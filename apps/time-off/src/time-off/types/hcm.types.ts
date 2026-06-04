@@ -33,9 +33,12 @@ export interface HcmBatchBalanceItem {
   locationId: string;
   leaveTypeId: string;
   availableDays: number;
+  /** Per-item timestamp from the HCM — use this to detect which records changed */
+  asOfDate: string;
 }
 
 export interface HcmBatchResponse {
   balances: HcmBatchBalanceItem[];
-  generatedAt: string; // ISO datetime from HCM
+  /** Top-level timestamp indicating when the HCM generated this response */
+  asOfDate: string;
 }

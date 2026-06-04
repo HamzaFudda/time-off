@@ -22,7 +22,4 @@ module.exports = {
   coverageDirectory: '../../../coverage',
   testEnvironment: 'node',
   setupFiles: ['../../../test/setup-env.ts'],
-  moduleNameMapper: {
-    '^uuid$': require.resolve('uuid'),
-  },
 };

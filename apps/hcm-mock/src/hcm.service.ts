@@ -5,11 +5,25 @@ import {
   InternalServerErrorException,
 } from '@nestjs/common';
 
+// ─── Interfaces ────────────────────────────────────────────────────────────────
+
 export interface MockBalance {
   employeeId: string;
   locationId: string;
   leaveTypeId: string;
+  /** Days currently available in the HCM */
   availableDays: number;
+  /** ISO timestamp of when this balance was last modified in the HCM */
+  lastModifiedAt: string;
+}
+
+export interface BalanceResponse {
+  employeeId: string;
+  locationId: string;
+  leaveTypeId: string;
+  availableDays: number;
+  /** ISO timestamp — signals to the consumer how fresh this data is */
+  asOfDate: string;
 }
 
 export interface DeductionRequest {
@@ -21,55 +35,276 @@ export interface DeductionRequest {
 }
 
 export interface DeductionResponse {
+  /** The idempotency key echo — consumer uses this to confirm which tx was processed */
+  transactionId: string;
   success: boolean;
   remainingBalance: number;
   errorMessage?: string;
+  /** ISO timestamp so the consumer can update its local cache accurately */
+  processedAt: string;
 }
+
+export interface BalanceMutationLog {
+  employeeId: string;
+  locationId: string;
+  leaveTypeId: string;
+  previousBalance: number;
+  newBalance: number;
+  reason: string;
+  mutatedAt: string;
+}
+
+// ─── Service ───────────────────────────────────────────────────────────────────
 
 @Injectable()
 export class HcmService {
   private readonly logger = new Logger(HcmService.name);
 
-  // In-memory balance store
+  /**
+   * Seed data representing the canonical HCM source-of-truth.
+   * In a real HCM, this would be backed by a persistent store (Workday DB, SAP, etc.).
+   */
   private readonly balances: MockBalance[] = [
     {
       employeeId: 'emp-123',
       locationId: 'loc-us',
       leaveTypeId: 'VACATION',
       availableDays: 15,
+      lastModifiedAt: new Date().toISOString(),
     },
     {
       employeeId: 'emp-123',
       locationId: 'loc-us',
       leaveTypeId: 'SICK',
       availableDays: 5,
+      lastModifiedAt: new Date().toISOString(),
     },
     {
       employeeId: 'emp-456',
       locationId: 'loc-uk',
       leaveTypeId: 'VACATION',
       availableDays: 25,
+      lastModifiedAt: new Date().toISOString(),
     },
   ];
 
-  // Idempotency store: transactionId -> DeductionResponse
+  /**
+   * Idempotency store: transactionId → DeductionResponse.
+   *
+   * A real HCM would persist this in a database with a TTL. We keep it
+   * in-memory for the mock. The key insight: once a transactionId is recorded
+   * here, we return the same response forever — no double deductions.
+   */
   private readonly processedTransactions = new Map<string, DeductionResponse>();
 
-  // Configuration for chaotic testing
-  private chaosMode = false;
+  /**
+   * Audit log of all out-of-band balance mutations (anniversary bonuses,
+   * HR corrections, etc.). Exposed via GET /admin/mutation-log so our
+   * time-off service tests can introspect what changed.
+   */
+  private readonly mutationLog: BalanceMutationLog[] = [];
 
-  enableChaosMode(enable: boolean) {
-    this.chaosMode = enable;
-    this.logger.log(`Chaos mode set to: ${enable}`);
-  }
+  /** Chaos mode configuration for testing resilience */
+  private chaosConfig = {
+    enabled: false,
+    failureProbability: 0.2, // 20% chance of 500 on each call
+  };
+
+  // ─── Balance Queries ─────────────────────────────────────────────────────
 
   getBalance(
     employeeId: string,
     locationId: string,
     leaveTypeId: string,
-  ): MockBalance {
+  ): BalanceResponse {
     this.simulateChaos();
 
+    const balance = this.findBalance(employeeId, locationId, leaveTypeId);
+
+    return {
+      employeeId: balance.employeeId,
+      locationId: balance.locationId,
+      leaveTypeId: balance.leaveTypeId,
+      availableDays: balance.availableDays,
+      asOfDate: balance.lastModifiedAt,
+    };
+  }
+
+  getBatchBalances(): { balances: BalanceResponse[]; asOfDate: string } {
+    this.simulateChaos();
+
+    const asOfDate = new Date().toISOString();
+
+    return {
+      balances: this.balances.map((b) => ({
+        employeeId: b.employeeId,
+        locationId: b.locationId,
+        leaveTypeId: b.leaveTypeId,
+        availableDays: b.availableDays,
+        asOfDate: b.lastModifiedAt,
+      })),
+      asOfDate,
+    };
+  }
+
+  // ─── Deductions ──────────────────────────────────────────────────────────
+
+  processDeduction(request: DeductionRequest): DeductionResponse {
+    this.simulateChaos();
+
+    // 1. Idempotency Check — return cached response if we've seen this tx before
+    const cached = this.processedTransactions.get(request.transactionId);
+    if (cached) {
+      this.logger.log(
+        `Idempotency hit for tx: ${request.transactionId} — returning cached response`,
+      );
+      return cached;
+    }
+
+    // 2. Find the balance record
+    let balance: MockBalance;
+    try {
+      balance = this.findBalance(
+        request.employeeId,
+        request.locationId,
+        request.leaveTypeId,
+      );
+    } catch {
+      const response: DeductionResponse = {
+        transactionId: request.transactionId,
+        success: false,
+        remainingBalance: 0,
+        errorMessage: 'Employee/leave-type dimensions not found in HCM',
+        processedAt: new Date().toISOString(),
+      };
+      this.processedTransactions.set(request.transactionId, response);
+      return response;
+    }
+
+    // 3. Business rule: no overdrafts
+    if (balance.availableDays < request.days) {
+      const response: DeductionResponse = {
+        transactionId: request.transactionId,
+        success: false,
+        remainingBalance: balance.availableDays,
+        errorMessage: `Insufficient balance in HCM: requested ${request.days}, available ${balance.availableDays}`,
+        processedAt: new Date().toISOString(),
+      };
+      this.processedTransactions.set(request.transactionId, response);
+      return response;
+    }
+
+    // 4. Commit the deduction
+    balance.availableDays -= request.days;
+    balance.lastModifiedAt = new Date().toISOString();
+
+    const response: DeductionResponse = {
+      transactionId: request.transactionId,
+      success: true,
+      remainingBalance: balance.availableDays,
+      processedAt: balance.lastModifiedAt,
+    };
+
+    this.processedTransactions.set(request.transactionId, response);
+
+    this.logger.log(
+      `Deduction committed — tx: ${request.transactionId}, employee: ${request.employeeId}, days: ${request.days}, remaining: ${balance.availableDays}`,
+    );
+
+    return response;
+  }
+
+  reverseDeduction(transactionId: string): {
+    success: boolean;
+    message: string;
+  } {
+    this.logger.log(`Reversal request for tx: ${transactionId}`);
+
+    const original = this.processedTransactions.get(transactionId);
+    if (!original || !original.success) {
+      return {
+        success: false,
+        message: 'Transaction not found or was not a successful deduction',
+      };
+    }
+
+    // In a real HCM, we'd look up the original request to know how many days
+    // to add back. For the mock, we note that the caller (our time-off service)
+    // tracks this locally and we simply acknowledge the reversal.
+    // This is intentionally simplified — the caller's local state is the source
+    // of truth for reversal amounts.
+    return { success: true, message: 'Reversal accepted by HCM' };
+  }
+
+  // ─── Admin / Test Control Endpoints ──────────────────────────────────────
+
+  /**
+   * Simulate an out-of-band HCM mutation — e.g. HR anniversary bonus,
+   * manual correction, carry-over policy applied by a batch job.
+   *
+   * This is what makes our time-off service's sync and TTL logic meaningful
+   * to test: we can change HCM state externally and then verify that our
+   * service detects and reconciles the divergence.
+   */
+  mutateBalance(
+    employeeId: string,
+    locationId: string,
+    leaveTypeId: string,
+    newAvailableDays: number,
+    reason: string,
+  ): BalanceResponse {
+    const balance = this.findBalance(employeeId, locationId, leaveTypeId);
+    const previousBalance = balance.availableDays;
+
+    balance.availableDays = newAvailableDays;
+    balance.lastModifiedAt = new Date().toISOString();
+
+    const logEntry: BalanceMutationLog = {
+      employeeId,
+      locationId,
+      leaveTypeId,
+      previousBalance,
+      newBalance: newAvailableDays,
+      reason,
+      mutatedAt: balance.lastModifiedAt,
+    };
+
+    this.mutationLog.push(logEntry);
+
+    this.logger.log(
+      `Out-of-band mutation: ${employeeId} ${leaveTypeId} ${previousBalance} → ${newAvailableDays} (${reason})`,
+    );
+
+    return {
+      employeeId: balance.employeeId,
+      locationId: balance.locationId,
+      leaveTypeId: balance.leaveTypeId,
+      availableDays: balance.availableDays,
+      asOfDate: balance.lastModifiedAt,
+    };
+  }
+
+  getMutationLog(): BalanceMutationLog[] {
+    return this.mutationLog;
+  }
+
+  setChaosMode(enabled: boolean, failureProbability?: number): void {
+    this.chaosConfig.enabled = enabled;
+    if (failureProbability !== undefined) {
+      this.chaosConfig.failureProbability = failureProbability;
+    }
+    this.logger.log(
+      `Chaos mode: ${enabled}, failure probability: ${this.chaosConfig.failureProbability}`,
+    );
+  }
+
+  // ─── Private Helpers ──────────────────────────────────────────────────────
+
+  private findBalance(
+    employeeId: string,
+    locationId: string,
+    leaveTypeId: string,
+  ): MockBalance {
     const balance = this.balances.find(
       (b) =>
         b.employeeId === employeeId &&
@@ -78,115 +313,30 @@ export class HcmService {
     );
 
     if (!balance) {
-      // In a real system, requesting balance for non-existent dimensions might return 404
-      throw new NotFoundException('Balance not found for given dimensions');
+      throw new NotFoundException(
+        `No balance record found in HCM for employee=${employeeId}, location=${locationId}, leaveType=${leaveTypeId}`,
+      );
     }
 
     return balance;
   }
 
-  getBatchBalances(): { balances: MockBalance[] } {
-    this.simulateChaos();
-    return { balances: this.balances };
-  }
-
-  processDeduction(request: DeductionRequest): DeductionResponse {
-    this.simulateChaos();
-
-    // 1. Idempotency Check
-    if (this.processedTransactions.has(request.transactionId)) {
-      this.logger.log(
-        `Idempotency hit! Returning cached response for tx: ${request.transactionId}`,
-      );
-      return this.processedTransactions.get(request.transactionId)!;
-    }
-
-    // 2. Find Balance
-    const balanceIndex = this.balances.findIndex(
-      (b) =>
-        b.employeeId === request.employeeId &&
-        b.locationId === request.locationId &&
-        b.leaveTypeId === request.leaveTypeId,
-    );
-
-    if (balanceIndex === -1) {
-      const response: DeductionResponse = {
-        success: false,
-        remainingBalance: 0,
-        errorMessage: 'Balance dimensions not found in HCM',
-      };
-      this.processedTransactions.set(request.transactionId, response);
-      return response;
-    }
-
-    const balance = this.balances[balanceIndex];
-
-    // 3. Business Logic validation (No overdrafts)
-    if (balance.availableDays < request.days) {
-      const response: DeductionResponse = {
-        success: false,
-        remainingBalance: balance.availableDays,
-        errorMessage: 'Insufficient balance in HCM',
-      };
-      this.processedTransactions.set(request.transactionId, response);
-      return response;
-    }
-
-    // 4. Mutate State
-    balance.availableDays -= request.days;
-
-    const successResponse: DeductionResponse = {
-      success: true,
-      remainingBalance: balance.availableDays,
-    };
-
-    this.logger.log(
-      `Processed deduction for ${request.employeeId}. Days: ${request.days}. Remaining: ${balance.availableDays}. Tx: ${request.transactionId}`,
-    );
-
-    // Store in idempotency cache
-    this.processedTransactions.set(request.transactionId, successResponse);
-
-    return successResponse;
-  }
-
-  reverseDeduction(transactionId: string): {
-    success: boolean;
-    message: string;
-  } {
-    // In a real system, you'd find the transaction, look at what it deducted, and add it back.
-    // For this mock, we'll just check if it exists and remove it, but we won't fully reverse the numbers
-    // unless we recorded the original deduction request parameters.
-    // Let's keep it simple: just acknowledge receipt.
-    this.logger.log(`Reversing transaction: ${transactionId}`);
-
-    if (this.processedTransactions.has(transactionId)) {
-      // In reality, we would add the days back to `balances`.
-      // For the mock, acknowledging is enough to test our time-off service's local cancellation.
-      return { success: true, message: 'Reversal accepted' };
-    }
-
-    return { success: false, message: 'Transaction not found for reversal' };
-  }
-
   /**
-   * Randomly throws 500s or adds latency if chaos mode is enabled.
-   * Useful to test exponential backoff and idempotency handling in the client.
+   * Chaos mode simulates random HCM unavailability to test:
+   * - Exponential backoff in HcmClientService
+   * - Idempotency on retries (no double deductions)
+   * - Graceful degradation (cached balance reads still served)
    */
-  private simulateChaos() {
-    if (!this.chaosMode) return;
+  private simulateChaos(): void {
+    if (!this.chaosConfig.enabled) return;
 
-    const rand = Math.random();
-
-    if (rand < 0.2) {
-      // 20% chance of random 500 error
-      this.logger.warn('Chaos monkey: Simulating 500 Internal Server Error');
-      throw new InternalServerErrorException('Simulated HCM downtime');
+    if (Math.random() < this.chaosConfig.failureProbability) {
+      this.logger.warn(
+        `[CHAOS] Simulating HCM 500 Internal Server Error (probability: ${this.chaosConfig.failureProbability})`,
+      );
+      throw new InternalServerErrorException(
+        'Simulated HCM downtime (chaos mode)',
+      );
     }
-
-    // Simulate latency (0-500ms)
-    // We do this sync via a busy-wait just for the mock, or we can just not do latency here
-    // since Node is async. A proper sleep is better if we made methods async.
-    // Given the methods are sync, let's just stick to 500 errors for chaos.
   }
 }
